@@ -80,7 +80,7 @@ python3 ffmpeg-encoder.py
 ### Example Run
 
 ```sh
-python3 encode.py
+python3 ffmpeg-encoder.py
 ```
 ### Sample Inputs
 
