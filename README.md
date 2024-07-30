@@ -1,4 +1,4 @@
-# ffmpeg-AV1-script
+# FFmpeg-AV1-script
 
 ## Overview
 
