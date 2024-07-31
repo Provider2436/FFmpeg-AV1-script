@@ -2,6 +2,9 @@ import os
 import subprocess
 import time
 import re
+import platform
+import shutil
+import requests
 
 #detect os
 is_windows = platform.system().lower() == 'windows'
@@ -15,7 +18,7 @@ else:
     run_cmd = ['bash']
 
 #script location
-script = input('Enter where you want the script to be located (with the extension {script_ext}): ').strip()
+script = input(f'Enter where you want the script to be located (with the extension {script_ext}): ').strip()
 
 #erasing script is it already exists
 with open(script, 'w') as file:
