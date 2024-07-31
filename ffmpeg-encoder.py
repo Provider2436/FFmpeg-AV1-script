@@ -39,7 +39,7 @@ def verif(inp, minn, maxx):
 def verif_str(inp, pattern=None, min_length=None):
     while True:
         val = input(inp).strip()
-        if pattern and val not in pattern:
+        if pattern and not re.match(pattern, val):
             print(f"The input must match the pattern: {pattern}")
         elif min_length and len(val) < min_length:
             print(f"The input must be at least {min_length} characters long")
