@@ -3,13 +3,12 @@ import subprocess
 import time
 import re
 import platform
-import shutil
-import requests
+import json
 
-#detect os
+# Detect OS
 is_windows = platform.system().lower() == 'windows'
 
-#script based on os
+# Script based on OS
 if is_windows:
     script_ext = '.bat'
     run_cmd = ['cmd.exe', '/c']
@@ -17,14 +16,14 @@ else:
     script_ext = '.sh'
     run_cmd = ['bash']
 
-#script location
+# Script location
 script = input(f'Enter where you want the script to be located (with the extension {script_ext}): ').strip()
 
-#erasing script is it already exists
+# Erasing script if it already exists
 with open(script, 'w') as file:
     pass
 
-#helper for the ffmpeg command variables
+# Helper for the ffmpeg command variables
 def verif(inp, minn, maxx):
     while True:
         try:
@@ -60,14 +59,28 @@ def check_path_exists(path, is_file=False):
     if not is_file and not os.path.isdir(path):
         raise ValueError(f"The path '{path}' is not a directory.")
 
-#movie or show
+def get_color_properties(file_path):
+    cmd = f'ffprobe -v error -select_streams v:0 -show_entries stream=color_space,color_transfer,color_primaries -of json "{file_path}"'
+    result = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffprobe failed: {result.stderr.decode('utf-8')}")
+    output = json.loads(result.stdout.decode('utf-8'))
+    stream = output['streams'][0]
+    color_props = {
+        'color_space': stream.get('color_space'),
+        'color_transfer': stream.get('color_transfer'),
+        'color_primaries': stream.get('color_primaries')
+    }
+    return color_props
+
+# Movie or show
 question = verif_str('Enter the type of the media (eg: movie, show): ', pattern=r'movie|show').strip()
 if question == "movie":
     files = 1
 elif question == "show":
     files = verif('Enter the number of episodes: ', 1, 1000)
 
-#path check
+# Path check
 s_path = verif_str("Enter the path of the source file(s): ", min_length=1)
 check_path_exists(s_path)
 
@@ -89,7 +102,7 @@ else:
     if o_name == "":
         o_name = s_name
 
-#variables in the ffmpeg command
+# Variables in the ffmpeg command
 preset = verif("Enter the preset number (goes from 12 to -1): ", -1, 12)
 crf = verif("Enter the crf (goes from 50 to 0): ", 0, 50)
 res = verif("Enter the resolution (eg: 1080, 720, 2160): ", 1, 4320)
@@ -97,38 +110,37 @@ dv = verif_str("Is your input file in Dolby Vision ? (yes or no): ", pattern=r'y
 grain = verif("Enter the grain (goes from 0 to 50): ", 0, 50)
 hw = verif_str("Do you have hardware acceleration (yes or no): ", pattern=r'yes|no').strip()
 
-
-#setting dolby vision
+# Setting Dolby Vision
 if dv == "yes":
-    dlv = "-dolbyvision true "
+    dlv = "-dolbyvision true"
 else:
     dlv = ""
 
-#setting hw acceleration
+# Setting hardware acceleration
 if hw == "yes":
-    typehw = verif_str("Enter the harware acceleration (eg: cuda, rocm, qsv): ", pattern=r'cuda|rocm|qsv|vaapi|dxva2|vdpau|d3d11va|opencl').strip()
-    hwa = f'-hwaccel {typehw}'
+    typehw = verif_str("Enter the hardware acceleration (eg: cuda, rocm, qsv): ", pattern=r'cuda|rocm|qsv|vaapi|dxva2|vdpau|d3d11va|opencl').strip()
+    hwa = f'-hwaccel {typehw} '
 else:
     hwa = ""
 
-#audio configuration
+# Audio configuration
 num_audio = verif("Enter the number of audio tracks: ", 0, 30)
 audio = []
 for i in range(num_audio):
     print("Enter audio configuration: ")
     track_num = verif(f'Enter the track number for track {i + 1} (Starts at 0, eg: 0, 1, 2, 43): ', 0, 30)
-    channels = verif (f'Enter the number of channels of track {i + 1} (eg: stereo = 2, 5.1 = 6, 7.1 = 8): ', 1, 8)
+    channels = verif(f'Enter the number of channels of track {i + 1} (eg: stereo = 2, 5.1 = 6, 7.1 = 8): ', 1, 8)
     bitrate = verif(f'Enter the bitrate of track {i + 1} (in kbps; eg: 128, 160, 224): ', 1, 512)
-    audio.append((track_num, channels, bitrate))  
+    audio.append((track_num, channels, bitrate))
 
-#subtitles
+# Subtitles
 sub_req = verif_str("Do you have subtitles ? (yes or no): ", pattern=r'yes|no')
 if sub_req == 'yes':
     sub = "-map 0:s -c:s copy "
 else:
     sub = ""
 
-#ffmpeg command generation
+# ffmpeg command generation
 a = 1
 l = []
 for i in range(files):
@@ -143,14 +155,29 @@ for i in range(files):
     else: 
         new_name = s_name
         new_out = o_name
+
     file_in = os.path.join(s_path, new_name)
     file_out = os.path.join(o_path, new_out)
     
-    cmd = (f'ffmpeg {hwa} -i {file_in} -map 0:v:0 -c:v libsvtav1 -preset {preset} -crf {crf} -pix_fmt yuv420p10le -color_range full -vf "scale=-1:{res}" -svtav1-params tune=0:film-grain={grain}:film-grain-denoise=0 {dlv}')
+    # Extract color properties using ffprobe
+    color_props = get_color_properties(file_in)
+    
+    # Build the ffmpeg command
+    cmd = (f'ffmpeg {hwa}-i "{file_in}" -map 0:v:0 -c:v libsvtav1 -preset {preset} -crf {crf} -pix_fmt yuv420p10le '
+           f'{dlv} -vf "scale=-1:{res}" -svtav1-params tune=0:film-grain={grain}:film-grain-denoise=0 ')
+    
+    if color_props['color_space']:
+        cmd += f'-colorspace {color_props["color_space"]} '
+    if color_props['color_transfer']:
+        cmd += f'-color_trc {color_props["color_transfer"]} '
+    if color_props['color_primaries']:
+        cmd += f'-color_primaries {color_props["color_primaries"]} '
+    
     for j, (track_num, channels, bitrate) in enumerate(audio):
-        cmd += f'-map 0:a:{track_num} -c:a:{track_num} libopus -b:a:{track_num} {bitrate}k -ac:a:{track_num} {channels} '
+        cmd += (f'-map 0:a:{track_num} -c:a:{track_num} libopus -b:a:{track_num} {bitrate}k -ac:a:{track_num} {channels} ')
+    
     cmd += sub
-    cmd += f'{file_out} -y'
+    cmd += f'"{file_out}" -y'
     l.append(cmd)
     a += 1
 
