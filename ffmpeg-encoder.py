@@ -1,63 +1,77 @@
 import os
+import sys
 import subprocess
 import time
 import re
 import platform
 import json
+import glob
+
+
+# Compile regex patterns for reuse
+episode_pattern = re.compile(r'(?P<season>S\d{2}E)(?P<episode>\d{2})')
+show_name_pattern = re.compile(r'.+S\d{2}E\d{2}.+')
+media_type_pattern = re.compile(r'movie|show')
+hardware_pattern = re.compile(r'cuda|rocm|qsv|vaapi|dxva2|vdpau|d3d11va|opencl')
+codec_pattern = re.compile(r'aac|libfdk_aac|libopus|ac3|ac3_fixed|eac3|flac|alac|wavpack|dca|truehd')
 
 # Detect OS
 is_windows = platform.system().lower() == 'windows'
 
 # Script based on OS
-if is_windows:
-    script_ext = '.bat'
-    run_cmd = ['cmd.exe', '/c']
-else:
-    script_ext = '.sh'
-    run_cmd = ['bash']
+script_ext = '.bat' if is_windows else '.sh'
+run_cmd = ['cmd.exe', '/c'] if is_windows else ['bash']
 
 # Script location
 script = input(f'Enter where you want the script to be located (with the extension {script_ext}): ').strip()
 
-# Erasing script if it already exists
+# Erase script if it already exists
 with open(script, 'w') as file:
     pass
 
-# Helper for the ffmpeg command variables
-def verif(inp, minn, maxx):
+def verif(inp, minn, maxx, default=None):
     while True:
         try:
-            val = int(input(inp))
-            if minn <= val <= maxx:
+            val = input(inp)
+            if not val and default is not None:
+                return default
+            elif minn <= int(val) <= maxx:
                 return val
             else:
                 print(f'Enter a value between {minn} and {maxx}')
         except ValueError:
             print("Invalid input, you need to input an int")
 
-def verif_str(inp, pattern=None, min_length=None):
+def verif_str(inp, pattern=None, min_length=None, default=None):
     while True:
         val = input(inp).strip()
-        if pattern and not re.match(pattern, val):
-            print(f"The input must match the pattern: {pattern}")
+        if not val and default is not None:
+            return default
+        elif pattern and not pattern.match(val):
+            print(f"The input must match the pattern: {pattern.pattern}")
         elif min_length and len(val) < min_length:
             print(f"The input must be at least {min_length} characters long")
         else:
             return val
 
 def swap_num(filename, new_num):
-    pattern = r'(S\d{2}E)\d{2}'
-    replacement = r'\g<1>{:02}'.format(new_num)
-    new_filename = re.sub(pattern, replacement, filename)
+    replacement = r'\g<season>{:02}'.format(new_num)
+    new_filename = episode_pattern.sub(replacement, filename)
     return new_filename
 
 def check_path_exists(path, is_file=False):
-    if not os.path.exists(path):
-        raise ValueError(f"The path '{path}' does not exist.")
-    if is_file and not os.path.isfile(path):
-        raise ValueError(f"The path '{path}' is not a file.")
-    if not is_file and not os.path.isdir(path):
-        raise ValueError(f"The path '{path}' is not a directory.")
+    while True:
+        if not os.path.exists(path):
+            print(f"The path '{path}' does not exist. Please enter a valid path.")
+            path = input("Please re-enter the correct path: ").strip()
+        elif is_file and not os.path.isfile(path):
+            print(f"The path '{path}' is not a file.")
+            path = input("Please re-enter the correct path: ").strip()
+        elif not is_file and not os.path.isdir(path):
+            print(f"The path '{path}' is not a directory.")
+            path = input("Please re-enter the correct path: ").strip()
+        else:
+            return path
 
 def get_color_properties(file_path):
     cmd = f'ffprobe -v error -select_streams v:0 -show_entries stream=color_space,color_transfer,color_primaries -of json "{file_path}"'
@@ -73,139 +87,167 @@ def get_color_properties(file_path):
     }
     return color_props
 
-# Movie or show
-question = verif_str('Enter the type of the media (eg: movie, show): ', pattern=r'movie|show').strip()
-if question == "movie":
-    files = 1
-elif question == "show":
-    files = verif('Enter the number of episodes: ', 1, 1000)
+def list_audio_tracks(file_path):
+    cmd = f'ffprobe -v error -select_streams a -show_entries stream=index,codec_name,channels,bit_rate -of json "{file_path}"'
+    result = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffprobe failed: {result.stderr.decode('utf-8')}")
+    output = json.loads(result.stdout.decode('utf-8'))
+    audio_tracks = []
+    for stream in output['streams']:
+        track_info = {
+            'index': stream['index'],
+            'codec_name': stream.get('codec_name', 'unknown'),
+            'channels': stream.get('channels', 'unknown'),
+            'bit_rate': int(stream.get('bit_rate', '0')) // 1000  # Convert to kbps
+        }
+        audio_tracks.append(track_info)
+    return audio_tracks
 
-# Path check
+def prompt_audio_track_selection(audio_tracks):
+    print("Available audio tracks:")
+    for track in audio_tracks:
+        print(f"Track {track['index']}: Codec = {track['codec_name']}, Channels = {track['channels']}, Bitrate = {track['bit_rate']} kbps")
+    
+    selected_track = verif("Select the track number you want to copy (or enter -1 to encode audio instead): ", -1, len(audio_tracks) + 2)
+    return selected_track
+
+# Media type selection
+question = verif_str('Enter the type of the media (eg: movie, show): ', pattern=media_type_pattern)
+files = 1 if question == "movie" else verif('Enter the number of episodes: ', 1, 1000)
+
+# Path validation with wildcard support
 s_path = verif_str("Enter the path of the source file(s): ", min_length=1)
-check_path_exists(s_path)
+s_path = check_path_exists(s_path)
+
+matched_files = []
+
+while not matched_files:
+    file_pattern = verif_str("Enter the file pattern to match (e.g., Bleach.S09E*.mkv): ", min_length=1)
+    full_pattern = os.path.join(s_path, file_pattern)
+    matched_files = glob.glob(full_pattern)
+    if not matched_files:
+        print(f"No files matched the pattern: {file_pattern}. Please try again.")
+
+total_files = len(matched_files)
+print(f"Found {total_files} files matching the pattern.")
 
 o_path = verif_str("Enter the output path of the encoded file(s): ", min_length=1)
 if not os.path.exists(o_path):
-    os.makedirs(o_path)  
+    os.makedirs(o_path)
 
-if files > 1:
-    pattern = r'S\d{2}E\d{2}'
-    s_name = verif_str("Enter one of the source episodes name (eg: 1883_S01E01.mkv): ", pattern=r'.+S\d{2}E\d{2}.+')
-    check_path_exists(os.path.join(s_path, s_name), is_file=True)
+if total_files > 1:
+    s_name = os.path.basename(matched_files[0])
     o_name = input("Enter one of the output episodes name (leave empty if you don't want to change it): ").strip()
-    if o_name == "":
+    if not o_name:
         o_name = s_name
 else:
-    s_name = verif_str("Enter the name of the source file (eg: Back_to_the_future_(1985).mkv): ", min_length=1)
-    check_path_exists(os.path.join(s_path, s_name), is_file=True)
+    s_name = os.path.basename(matched_files[0])
     o_name = input("Enter the name that you want to give to the output file (leave empty if you don't want to change it): ").strip()
-    if o_name == "":
+    if not o_name:
         o_name = s_name
 
 # Variables in the ffmpeg command
-preset = verif("Enter the preset number (goes from 12 to -1): ", -1, 12)
-crf = verif("Enter the crf (goes from 50 to 0): ", 0, 50)
-res = verif("Enter the resolution (eg: 1080, 720, 2160): ", 1, 4320)
-dv = verif_str("Is your input file in Dolby Vision ? (yes or no): ", pattern=r'yes|no').strip()
-grain = verif("Enter the grain (goes from 0 to 50): ", 0, 50)
-hw = verif_str("Do you have hardware acceleration (yes or no): ", pattern=r'yes|no').strip()
+preset = verif("Enter the preset number (default: 3): ", -1, 12, 3)
+crf = verif("Enter the crf (default: 27): ", 0, 50, 27)
+res = verif("Enter the resolution (default: 1080): ", 1, 4320, 1080)
+grain = verif("Enter the grain (default: 0): ", 0, 50, 0)
+dv = verif_str("Is your input file in Dolby Vision ? (yes or no) (default is no): ", pattern=re.compile(r'yes|no'), default='no')
+hw = verif_str("Do you have hardware acceleration (yes or no) (default is no): ", pattern=re.compile(r'yes|no'), default='no')
 
 # Setting Dolby Vision
-if dv == "yes":
-    dlv = "-dolbyvision true"
-else:
-    dlv = ""
+dlv = "-dolbyvision true " if dv == "yes" else ""
 
 # Setting hardware acceleration
 if hw == "yes":
-    typehw = verif_str("Enter the hardware acceleration (eg: cuda, rocm, qsv): ", pattern=r'cuda|rocm|qsv|vaapi|dxva2|vdpau|d3d11va|opencl').strip()
-    hwa = f'-hwaccel {typehw} '
+    typehw = verif_str("Enter the hardware acceleration (eg: cuda, rocm, qsv): ", pattern=hardware_pattern)
+    hwa = f'-hwaccel {typehw}'
 else:
     hwa = ""
 
-# Audio configuration
-num_audio = verif("Enter the number of audio tracks: ", 0, 30)
-audio = []
-for i in range(num_audio):
-    print("Enter audio configuration: ")
-    track_num = verif(f'Enter the track number for track {i + 1} (Starts at 0, eg: 0, 1, 2, 43): ', 0, 30)
-    channels = verif(f'Enter the number of channels of track {i + 1} (eg: stereo = 2, 5.1 = 6, 7.1 = 8): ', 1, 8)
-    bitrate = verif(f'Enter the bitrate of track {i + 1} (in kbps; eg: 128, 160, 224): ', 1, 512)
-    audio.append((track_num, channels, bitrate))
+# Audio configuration using ffprobe
+audio_tracks = list_audio_tracks(os.path.join(s_path, s_name))
+audio_cmd = ''
+for i in range(len(audio_tracks)):
+    selected_track = int(prompt_audio_track_selection(audio_tracks))
+
+    if selected_track != -1:
+        track_to_copy = audio_tracks[int(selected_track)-2]
+        audio_cmd += f'-map 0:a:{int(track_to_copy["index"])-1} -c:a:{int(track_to_copy["index"])-1} copy '
+    else:
+        num_audio = verif("Enter the number of audio tracks: ", 0, 30)
+        audio = []
+        for i in range(int(num_audio)):
+            print("Enter audio configuration: ")
+            track_num = verif(f'Enter the track number {i+1} (track 1 = 0, track 2 = 1, ...): ', 0, 30)
+            codec = verif_str("Enter the audio codec (eg: aac, libopus, ac3, eac3): ", pattern=codec_pattern)
+            bitrate = verif('Enter the audio bitrate (eg: 128, 192, 224, 256, ...): ', 8, 1024)
+            channels = verif("Enter the number of channels (1 to 8, 1 = mono, 2 = stereo, 6 = 5.1, 8 = 7.1): ", 1, 8)
+            audio.append(f'-map 0:a:{track_num} -c:a:{track_num} {codec} -b:a:{track_num} {bitrate}k -ac:a:{track_num} {channels} ')
+        audio_cmd = ' '.join(audio)
+        break
 
 # Subtitles
-sub_req = verif_str("Do you have subtitles ? (yes or no): ", pattern=r'yes|no')
+sub_req = verif_str("Do you have subtitles ? (yes or no) (default is no): ", pattern=re.compile(r'yes|no'), default='no')
 if sub_req == 'yes':
-    sub = "-map 0:s -c:s copy "
+    sub = "-map 0:s -c:s copy"
 else:
     sub = ""
 
-# ffmpeg command generation
-a = 1
-l = []
-for i in range(files):
-    if files > 1:
-        num = f"{a:02}"
-        new_name = s_name
-        new_out = o_name
-        if re.search(pattern, s_name):
-            new_name = swap_num(new_name, a)
-        if re.search(pattern, o_name):
-            new_out = swap_num(new_out, a)
-    else: 
-        new_name = s_name
-        new_out = o_name
+# Summary before execution
+settings_summary = f"""
+Summary of your settings:
+Input Path: {s_path}
+Output Path: {o_path}
+Preset: {preset}
+CRF: {crf}
+Resolution: {res}
+Grain: {grain}
+Dolby Vision: {dlv}
+Hardware Acceleration: {hwa}
+Audio Configuration: {audio_cmd}
+Subtitles: {sub}
+"""
+print(settings_summary)
+confirm = verif_str("Do you want to proceed with these settings? (yes/no): ", pattern=re.compile(r'yes|no'))
+if confirm != 'yes':
+    os.execv(sys.executable, ['python'] + sys.argv)
 
-    file_in = os.path.join(s_path, new_name)
-    file_out = os.path.join(o_path, new_out)
-    
-    # Extract color properties using ffprobe
-    color_props = get_color_properties(file_in)
-    
-    # Build the ffmpeg command
-    cmd = (f'ffmpeg {hwa}-i "{file_in}" -map 0:v:0 -c:v libsvtav1 -preset {preset} -crf {crf} -pix_fmt yuv420p10le '
-           f'{dlv} -vf "scale=-1:{res}" -svtav1-params tune=0:film-grain={grain}:film-grain-denoise=0 ')
-    
-    if color_props['color_space']:
-        cmd += f'-colorspace {color_props["color_space"]} '
-    if color_props['color_transfer']:
-        cmd += f'-color_trc {color_props["color_transfer"]} '
-    if color_props['color_primaries']:
-        cmd += f'-color_primaries {color_props["color_primaries"]} '
-    
-    for j, (track_num, channels, bitrate) in enumerate(audio):
-        cmd += (f'-map 0:a:{track_num} -c:a:{track_num} libopus -b:a:{track_num} {bitrate}k -ac:a:{track_num} {channels} ')
-    
-    cmd += sub
-    cmd += f'"{file_out}" -y'
-    l.append(cmd)
-    a += 1
-
-#pasting the command(s) in script file
+# Writing the script file
 with open(script, 'w') as file:
     if is_windows:
         file.write('@echo off\n\n')
     else:
         file.write('#!/bin/bash\n\n')
-    for elem in l:
-        file.write(elem + '\n\n')
+    for i, source_file in enumerate(matched_files):
+        color_props = get_color_properties(source_file)
+        output_file = swap_num(o_name, i + 1)
+        output_file_path = os.path.join(o_path, output_file)
+        ffmpeg_command = (f'ffmpeg {hwa} -i "{source_file}" -map 0:v:0 -c:v libsvtav1 -preset {preset} -crf {crf} -pix_fmt yuv420p10le {dlv}-vf "scale=-1:{res}" -svtav1-params tune=0:film-grain={grain}:film-grain-denoise=0 ')
+        
+        if color_props['color_space']:
+            ffmpeg_command += f'-colorspace {color_props["color_space"]} '
+        if color_props['color_transfer']:
+            ffmpeg_command += f'-color_trc {color_props["color_transfer"]} '
+        if color_props['color_primaries']:
+            ffmpeg_command += f'-color_primaries {color_props["color_primaries"]} '
+        
+        ffmpeg_command += (f'{audio_cmd}{sub} "{output_file_path}" -y' '\n' '\n')
+        file.write(ffmpeg_command)
 
-#making the file executable
+# Making the file executable on Linux/MacOS
 if not is_windows:
     os.chmod(script, 0o755)
+print(f"Script '{script}' generated successfully.")
 
-
-#launching the command and benchmarking the time
-time_ini = time.time()
+start_time = time.time()  # Start the timer
 
 try:
     subprocess.run(run_cmd + [script], check=True)
 except subprocess.CalledProcessError as e:
     print(f'Error while running: {e}')
-
-time_end = time.time() - time_ini
-
-hours, remainder = divmod(time_end, 3600)
-minutes, seconds = divmod(remainder, 60)
-
-print(f'The encode took: {int(hours)}:{int(minutes):02}:{int(seconds):02}')
+# End of the timer
+end_time = time.time()
+total_time = end_time - start_time
+minutes, seconds = divmod(total_time, 60)
+print(f"'\n'Encoding completed in {int(minutes)} minutes and {int(seconds)} seconds.")
