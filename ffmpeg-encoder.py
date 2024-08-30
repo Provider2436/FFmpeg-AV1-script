@@ -132,6 +132,14 @@ while not matched_files:
 total_files = len(matched_files)
 print(f"Found {total_files} files matching the pattern.")
 
+def extract_episode_num(filename):
+    match = episode_pattern.search(filename)
+    if match:
+        return int(match.group('episode'))
+    return -1
+
+matched_files.sort(key=extract_episode_num)
+
 o_path = verif_str("Enter the output path of the encoded file(s): ", min_length=1)
 if not os.path.exists(o_path):
     os.makedirs(o_path)
@@ -221,7 +229,8 @@ with open(script, 'w') as file:
         file.write('#!/bin/bash\n\n')
     for i, source_file in enumerate(matched_files):
         color_props = get_color_properties(source_file)
-        output_file = swap_num(o_name, i + 1)
+        episode_number = extract_episode_num(source_file)
+        output_file = swap_num(o_name, episode_number)
         output_file_path = os.path.join(o_path, output_file)
         ffmpeg_command = (f'ffmpeg {hwa} -i "{source_file}" -map 0:v:0 -c:v libsvtav1 -preset {preset} -crf {crf} -pix_fmt yuv420p10le {dlv}-vf "scale=-1:{res}" -svtav1-params tune=0:film-grain={grain}:film-grain-denoise=0 ')
         
@@ -249,5 +258,6 @@ except subprocess.CalledProcessError as e:
 # End of the timer
 end_time = time.time()
 total_time = end_time - start_time
-minutes, seconds = divmod(total_time, 60)
-print(f"'\n'Encoding completed in {int(minutes)} minutes and {int(seconds)} seconds.")
+hours, remainder = divmod(total_time, 3600)
+minutes, seconds = divmod(remainder, 60)
+print(f"\nEncoding completed in {int(hours)} hours, {int(minutes)} minutes, and {int(seconds)} seconds.")
