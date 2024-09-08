@@ -96,7 +96,7 @@ def list_audio_tracks(file_path):
     audio_tracks = []
     for stream in output['streams']:
         track_info = {
-            'index': stream['index'],
+            'index': int(stream['index'])-1,
             'codec_name': stream.get('codec_name', 'unknown'),
             'channels': stream.get('channels', 'unknown'),
             'bit_rate': int(stream.get('bit_rate', '0')) // 1000  # Convert to kbps
@@ -178,10 +178,10 @@ audio_tracks = list_audio_tracks(os.path.join(s_path, s_name))
 audio_cmd = ''
 for i in range(len(audio_tracks)):
     selected_track = int(prompt_audio_track_selection(audio_tracks))
-
+    print(audio_cmd)
     if selected_track != -1:
-        track_to_copy = audio_tracks[int(selected_track)-2]
-        audio_cmd += f'-map 0:a:{int(track_to_copy["index"])-1} -c:a:{int(track_to_copy["index"])-1} copy '
+        track_to_copy = audio_tracks[selected_track]
+        audio_cmd += f'-map 0:a:{track_to_copy["index"]} -c:a:{track_to_copy["index"]} copy '
     else:
         num_audio = verif("Enter the number of audio tracks: ", 0, 30)
         audio = []
@@ -192,7 +192,7 @@ for i in range(len(audio_tracks)):
             bitrate = verif('Enter the audio bitrate (eg: 128, 192, 224, 256, ...): ', 8, 1024)
             channels = verif("Enter the number of channels (1 to 8, 1 = mono, 2 = stereo, 6 = 5.1, 8 = 7.1): ", 1, 8)
             audio.append(f'-map 0:a:{track_num} -c:a:{track_num} {codec} -b:a:{track_num} {bitrate}k -ac:a:{track_num} {channels} ')
-        audio_cmd = ' '.join(audio)
+        audio_cmd += ' '.join(audio)
         break
 
 # Subtitles
