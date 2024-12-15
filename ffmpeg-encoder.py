@@ -104,6 +104,15 @@ def list_audio_tracks(file_path):
         audio_tracks.append(track_info)
     return audio_tracks
 
+def list_subtitle_tracks(file_path):
+    cmd = f'ffprobe -v error -select_streams s -show_entries stream=index -of json "{file_path}"'
+    result = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffprobe failed: {result.stderr.decode('utf-8')}")
+    output = json.loads(result.stdout.decode('utf-8'))
+    subtitle_tracks = output.get('streams', [])
+    return len(subtitle_tracks) > 0
+
 def prompt_audio_track_selection(audio_tracks):
     print("Available audio tracks:")
     for track in audio_tracks:
@@ -178,7 +187,6 @@ audio_tracks = list_audio_tracks(os.path.join(s_path, s_name))
 audio_cmd = ''
 for i in range(len(audio_tracks)):
     selected_track = int(prompt_audio_track_selection(audio_tracks))
-    print(audio_cmd)
     if selected_track != -1:
         track_to_copy = audio_tracks[selected_track]
         audio_cmd += f'-map 0:a:{track_to_copy["index"]} -c:a:{track_to_copy["index"]} copy '
@@ -196,10 +204,14 @@ for i in range(len(audio_tracks)):
         break
 
 # Subtitles
-sub_req = verif_str("Do you have subtitles ? (yes or no) (default is no): ", pattern=re.compile(r'yes|no'), default='no')
-if sub_req == 'yes':
-    sub = "-map 0:s -c:s copy"
+if list_subtitle_tracks(os.path.join(s_path, s_name)):
+    sub_req = verif_str("Subtitles detected. Do you want to include subtitles? (yes or no) (default is no): ", pattern=re.compile(r'yes|no'), default='no')
+    if sub_req == 'yes':
+        sub = "-map 0:s -c:s copy"
+    else:
+        sub = ""
 else:
+    print("No subtitles detected.")
     sub = ""
 
 # Summary before execution
